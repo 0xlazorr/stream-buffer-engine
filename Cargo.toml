@@ -1,0 +1,18 @@
+[package]
+name = "stream-buffer-engine"
+version = "0.1.0"
+edition = "2021"
+authors = ["Lazarus Ebi <lazorronchain@gmail.com>"]
+description = "High-Throughput Stream Engine & Zero-Copy Buffer Parser in Rust"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1.38", features = ["full"] }
+bytes = "1.6"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+clap = { version = "4.5", features = ["derive"] }
+crc32fast = "1.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
