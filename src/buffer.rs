@@ -14,6 +14,10 @@ impl RingBuffer {
     }
 
     pub fn extend_from_slice(&mut self, chunk: &[u8]) -> Result<(), &'static str> {
+        // Prevent memory fragmentation and leaks: reset storage when drained
+        if self.storage.is_empty() {
+            self.storage.clear();
+        }
         if self.storage.len() + chunk.len() > self.capacity {
             return Err("Buffer overflow: chunk exceeds capacity");
         }
@@ -35,6 +39,10 @@ impl RingBuffer {
 
     pub fn advance(&mut self, cnt: usize) {
         self.storage.advance(cnt);
+        // Automatically reclaim capacity once buffer is fully consumed
+        if self.storage.is_empty() {
+            self.storage.clear();
+        }
     }
 
     pub fn clear(&mut self) {

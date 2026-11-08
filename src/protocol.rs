@@ -23,18 +23,51 @@ pub struct Frame {
     pub payload: Bytes,
 }
 
-pub struct ProtocolDecoder;
+/// Explicit Finite State Machine for network stream protocol decoding
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecoderState {
+    AwaitingHeader { needed: usize },
+    ValidatingHeader { magic: u16 },
+    AwaitingPayload { stream_id: u16, payload_len: usize, expected_checksum: u16, needed: usize },
+    VerifyingChecksum { stream_id: u16, payload_len: usize },
+    FrameComplete,
+    ErrorRecovered,
+}
 
-impl ProtocolDecoder {
-    pub fn decode(buf: &mut crate::buffer::RingBuffer) -> Result<Option<Frame>, ProtocolError> {
+pub struct FrameDecoderStateMachine {
+    state: DecoderState,
+}
+
+impl Default for FrameDecoderStateMachine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FrameDecoderStateMachine {
+    pub fn new() -> Self {
+        Self {
+            state: DecoderState::AwaitingHeader { needed: HEADER_SIZE },
+        }
+    }
+
+    pub fn state(&self) -> &DecoderState {
+        &self.state
+    }
+
+    pub fn decode_step(&mut self, buf: &mut crate::buffer::RingBuffer) -> Result<Option<Frame>, ProtocolError> {
         if buf.len() < HEADER_SIZE {
+            self.state = DecoderState::AwaitingHeader { needed: HEADER_SIZE - buf.len() };
             return Ok(None);
         }
 
         let slice = buf.as_slice();
         let magic = u16::from_be_bytes([slice[0], slice[1]]);
+        self.state = DecoderState::ValidatingHeader { magic };
+
         if magic != MAGIC_BYTE {
             buf.advance(1);
+            self.state = DecoderState::ErrorRecovered;
             return Err(ProtocolError::InvalidMagic(magic));
         }
 
@@ -44,16 +77,25 @@ impl ProtocolDecoder {
 
         let total_frame_len = HEADER_SIZE + payload_len;
         if buf.len() < total_frame_len {
+            self.state = DecoderState::AwaitingPayload {
+                stream_id,
+                payload_len,
+                expected_checksum,
+                needed: total_frame_len - buf.len(),
+            };
             return Ok(None);
         }
 
+        self.state = DecoderState::VerifyingChecksum { stream_id, payload_len };
         let payload_slice = &buf.as_slice()[HEADER_SIZE..total_frame_len];
         let mut hasher = Hasher::new();
         hasher.update(payload_slice);
         let computed_checksum = (hasher.finalize() & 0xFFFF) as u16;
 
         if computed_checksum != expected_checksum {
-            buf.advance(HEADER_SIZE);
+            // Discard the entire invalid frame to prevent leaking corrupted payload into header parsing
+            buf.advance(total_frame_len);
+            self.state = DecoderState::ErrorRecovered;
             return Err(ProtocolError::ChecksumMismatch {
                 expected: expected_checksum,
                 computed: computed_checksum,
@@ -62,8 +104,18 @@ impl ProtocolDecoder {
 
         let payload = Bytes::copy_from_slice(payload_slice);
         buf.advance(total_frame_len);
+        self.state = DecoderState::FrameComplete;
 
         Ok(Some(Frame { stream_id, payload }))
+    }
+}
+
+pub struct ProtocolDecoder;
+
+impl ProtocolDecoder {
+    pub fn decode(buf: &mut crate::buffer::RingBuffer) -> Result<Option<Frame>, ProtocolError> {
+        let mut fsm = FrameDecoderStateMachine::new();
+        fsm.decode_step(buf)
     }
 
     pub fn encode(stream_id: u16, payload: &[u8]) -> Vec<u8> {
